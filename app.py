@@ -3,9 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import anthropic
-import json
-import io
+import re
 
 # --- Page Config ---
 st.set_page_config(
@@ -50,229 +48,358 @@ st.markdown("""
 # --- Header ---
 st.markdown('<div class="main-header">📊 Sales Insights Chatbot</div>',
             unsafe_allow_html=True)
-st.markdown('''<div class="sub-header">Upload your sales CSV and chat with
-            your data using AI</div>''', unsafe_allow_html=True)
+st.markdown('''<div class="sub-header">Upload your sales CSV and chat
+            with your data instantly</div>''', unsafe_allow_html=True)
 
-# --- Initialize Session State ---
+# --- Session State ---
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'df' not in st.session_state:
     st.session_state.df = None
-if 'data_summary' not in st.session_state:
-    st.session_state.data_summary = None
 
-# --- Helper: Generate Data Summary ---
-def generate_data_summary(df):
-    summary = {
-        'shape': df.shape,
-        'columns': df.columns.tolist(),
-        'dtypes': df.dtypes.astype(str).to_dict(),
-        'numeric_summary': {},
-        'sample_data': df.head(3).to_string()
+# --- Smart Analytics Engine ---
+def detect_columns(df):
+    cols = {
+        'sales': None, 'profit': None, 'quantity': None,
+        'date': None, 'category': None, 'product': None,
+        'region': None, 'customer': None, 'discount': None
     }
+    for col in df.columns:
+        col_lower = col.lower()
+        if any(x in col_lower for x in ['sale', 'revenue', 'amount']):
+            cols['sales'] = col
+        elif any(x in col_lower for x in ['profit', 'margin']):
+            cols['profit'] = col
+        elif any(x in col_lower for x in ['qty', 'quantity', 'units']):
+            cols['quantity'] = col
+        elif any(x in col_lower for x in ['date', 'time', 'order']):
+            if df[col].dtype == 'object':
+                try:
+                    pd.to_datetime(df[col])
+                    cols['date'] = col
+                except Exception:
+                    pass
+        elif any(x in col_lower for x in ['category', 'type', 'segment']):
+            cols['category'] = col
+        elif any(x in col_lower for x in ['product', 'item', 'name']):
+            cols['product'] = col
+        elif any(x in col_lower for x in ['region', 'area', 'zone', 'state']):
+            cols['region'] = col
+        elif any(x in col_lower for x in ['customer', 'client', 'buyer']):
+            cols['customer'] = col
+        elif any(x in col_lower for x in ['discount', 'promo']):
+            cols['discount'] = col
+    return cols
 
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    for col in numeric_cols:
-        summary['numeric_summary'][col] = {
-            'min': round(df[col].min(), 2),
-            'max': round(df[col].max(), 2),
-            'mean': round(df[col].mean(), 2),
-            'sum': round(df[col].sum(), 2)
-        }
-
-    cat_cols = df.select_dtypes(include=['object']).columns
-    summary['categorical_info'] = {}
-    for col in cat_cols[:5]:
-        summary['categorical_info'][col] = df[col].value_counts().head(5).to_dict()
-
-    return summary
-
-# --- Helper: Build Chart ---
-def build_chart(df, question):
-    question_lower = question.lower()
-    fig = None
-
+def analyze_question(question, df):
+    q = question.lower()
+    cols = detect_columns(df)
+    response = ""
+    chart = None
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(include=['object']).columns.tolist()
 
-    try:
-        if any(word in question_lower for word in
-               ['trend', 'over time', 'monthly', 'daily', 'yearly']):
-            date_cols = [c for c in df.columns if 'date' in c.lower()
-                        or 'time' in c.lower()]
-            if date_cols and numeric_cols:
-                df[date_cols[0]] = pd.to_datetime(df[date_cols[0]])
-                df_time = df.groupby(date_cols[0])[numeric_cols[0]].sum().reset_index()
-                fig = px.line(df_time, x=date_cols[0], y=numeric_cols[0],
-                             title=f'{numeric_cols[0]} Over Time')
+    # --- Total Sales ---
+    if any(x in q for x in ['total sales', 'overall sales',
+                              'how much sales', 'revenue']):
+        if cols['sales']:
+            total = df[cols['sales']].sum()
+            avg = df[cols['sales']].mean()
+            max_val = df[cols['sales']].max()
+            response = f"""💰 **Sales Overview**
 
-        elif any(word in question_lower for word in
-                 ['top', 'best', 'highest', 'most', 'ranking']):
-            if cat_cols and numeric_cols:
-                top = df.groupby(cat_cols[0])[numeric_cols[0]].sum(
-                ).sort_values(ascending=False).head(10).reset_index()
-                fig = px.bar(top, x=numeric_cols[0], y=cat_cols[0],
-                            orientation='h',
-                            title=f'Top {cat_cols[0]} by {numeric_cols[0]}',
-                            color=numeric_cols[0],
-                            color_continuous_scale='Blues')
+- **Total Sales:** ${total:,.2f}
+- **Average Transaction:** ${avg:,.2f}
+- **Highest Single Sale:** ${max_val:,.2f}
+- **Total Transactions:** {len(df):,}
 
-        elif any(word in question_lower for word in
-                 ['distribution', 'breakdown', 'share', 'proportion']):
-            if cat_cols and numeric_cols:
-                dist = df.groupby(cat_cols[0])[numeric_cols[0]].sum().reset_index()
-                fig = px.pie(dist, names=cat_cols[0], values=numeric_cols[0],
-                            title=f'{numeric_cols[0]} Distribution by {cat_cols[0]}',
-                            hole=0.4)
+📌 **Insight:** Your average transaction value is ${avg:,.2f}.
+{'Consider upselling strategies to increase this.' if avg < total/len(df)*1.2 else 'Strong average transaction value!'}"""
+            if cols['category']:
+                cat_sales = df.groupby(cols['category'])[cols['sales']].sum(
+                ).sort_values(ascending=False).reset_index()
+                chart = px.bar(cat_sales, x=cols['sales'],
+                              y=cols['category'], orientation='h',
+                              title='Total Sales by Category',
+                              color=cols['sales'],
+                              color_continuous_scale='Blues')
+        else:
+            response = summarize_numeric(df)
 
-        elif any(word in question_lower for word in
-                 ['compare', 'vs', 'versus', 'difference']):
-            if cat_cols and numeric_cols:
-                comp = df.groupby(cat_cols[0])[numeric_cols[0]].sum().reset_index()
-                fig = px.bar(comp, x=cat_cols[0], y=numeric_cols[0],
-                            title=f'{numeric_cols[0]} by {cat_cols[0]}',
-                            color=cat_cols[0])
+    # --- Profit ---
+    elif any(x in q for x in ['profit', 'margin', 'earning']):
+        if cols['profit']:
+            total_profit = df[cols['profit']].sum()
+            avg_profit = df[cols['profit']].mean()
+            loss_count = (df[cols['profit']] < 0).sum()
+            response = f"""📈 **Profit Analysis**
 
-        elif any(word in question_lower for word in
-                 ['profit', 'margin', 'performance']):
-            if len(numeric_cols) >= 2:
-                fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1],
-                                title=f'{numeric_cols[0]} vs {numeric_cols[1]}',
-                                opacity=0.6)
+- **Total Profit:** ${total_profit:,.2f}
+- **Average Profit per Transaction:** ${avg_profit:,.2f}
+- **Loss-making Transactions:** {loss_count:,}
+"""
+            if cols['sales']:
+                margin = (total_profit / df[cols['sales']].sum()) * 100
+                response += f"- **Overall Profit Margin:** {margin:.2f}%\n"
+                response += f"\n📌 **Insight:** {'Your margin is healthy above 10%!' if margin > 10 else 'Margin below 10% — review pricing and costs.'}"
 
-    except Exception:
-        pass
+            if cols['category']:
+                cat_profit = df.groupby(cols['category'])[cols['profit']].sum(
+                ).sort_values(ascending=True).reset_index()
+                chart = go.Figure(go.Bar(
+                    y=cat_profit[cols['category']],
+                    x=cat_profit[cols['profit']],
+                    orientation='h',
+                    marker_color=['coral' if x < 0 else 'steelblue'
+                                 for x in cat_profit[cols['profit']]]))
+                chart.update_layout(
+                    title='Profit by Category (Red = Loss)',
+                    xaxis_title='Profit ($)')
+        else:
+            response = "I couldn't find a profit column in your data."
 
-    return fig
+    # --- Top Products ---
+    elif any(x in q for x in ['top', 'best', 'highest',
+                                'most', 'leading', 'ranking']):
+        target_col = cols['product'] or cols['category'] or cat_cols[0] if cat_cols else None
+        value_col = cols['sales'] or cols['profit'] or numeric_cols[0] if numeric_cols else None
 
-# --- Helper: Ask Claude ---
-def ask_claude(question, data_summary, api_key):
-    client = anthropic.Anthropic(api_key=api_key)
+        if target_col and value_col:
+            top = df.groupby(target_col)[value_col].sum(
+            ).sort_values(ascending=False).head(10).reset_index()
+            response = f"""🏆 **Top 10 {target_col} by {value_col}**\n\n"""
+            for i, row in top.iterrows():
+                response += f"{i+1}. **{row[target_col]}** — ${row[value_col]:,.2f}\n"
+            response += f"\n📌 **Insight:** {top.iloc[0][target_col]} leads with ${top.iloc[0][value_col]:,.2f}"
 
-    system_prompt = f"""You are an expert data analyst and business intelligence assistant.
-You have been given access to a sales dataset with the following properties:
+            chart = px.bar(top, x=value_col, y=target_col,
+                          orientation='h',
+                          title=f'Top 10 {target_col} by {value_col}',
+                          color=value_col,
+                          color_continuous_scale='Viridis')
+        else:
+            response = "I couldn't identify the right columns for ranking."
 
-Dataset Shape: {data_summary['shape'][0]} rows, {data_summary['shape'][1]} columns
-Columns: {', '.join(data_summary['columns'])}
+    # --- Regional Analysis ---
+    elif any(x in q for x in ['region', 'area', 'location',
+                                'state', 'geographic', 'where']):
+        target_col = cols['region'] or next(
+            (c for c in cat_cols if any(x in c.lower()
+             for x in ['region', 'state', 'city'])), None)
+        value_col = cols['sales'] or numeric_cols[0] if numeric_cols else None
 
-Numeric Column Statistics:
-{json.dumps(data_summary['numeric_summary'], indent=2)}
+        if target_col and value_col:
+            regional = df.groupby(target_col).agg({
+                value_col: 'sum'
+            }).sort_values(value_col, ascending=False).reset_index()
 
-Top Categories:
-{json.dumps(data_summary['categorical_info'], indent=2)}
+            response = f"""🗺️ **Regional Performance**\n\n"""
+            for i, row in regional.iterrows():
+                response += f"- **{row[target_col]}:** ${row[value_col]:,.2f}\n"
 
-Sample Data:
-{data_summary['sample_data']}
+            top_region = regional.iloc[0][target_col]
+            response += f"\n📌 **Insight:** {top_region} is your strongest market. Consider expanding successful strategies from here to other regions."
 
-Your job is to:
-1. Answer questions about this data clearly and concisely
-2. Provide specific numbers and insights from the statistics above
-3. Give actionable business recommendations
-4. Be conversational but professional
-5. If asked about something not in the data, say so clearly
+            chart = px.bar(regional, x=target_col, y=value_col,
+                          title=f'{value_col} by {target_col}',
+                          color=value_col,
+                          color_continuous_scale='Blues')
+        else:
+            response = "I couldn't find regional data in your dataset."
 
-Always structure your response with:
-- Direct answer to the question
-- Key numbers/metrics
-- Business insight or recommendation
+    # --- Trend Analysis ---
+    elif any(x in q for x in ['trend', 'over time', 'monthly',
+                                'growth', 'yearly', 'time series']):
+        date_col = cols['date'] or next(
+            (c for c in df.columns if 'date' in c.lower()), None)
+        value_col = cols['sales'] or numeric_cols[0] if numeric_cols else None
+
+        if date_col and value_col:
+            df_temp = df.copy()
+            df_temp[date_col] = pd.to_datetime(df_temp[date_col])
+            df_temp['Month'] = df_temp[date_col].dt.to_period('M').astype(str)
+            monthly = df_temp.groupby('Month')[value_col].sum().reset_index()
+
+            first = monthly[value_col].iloc[0]
+            last = monthly[value_col].iloc[-1]
+            growth = ((last - first) / first) * 100
+
+            response = f"""📅 **Sales Trend Analysis**
+
+- **First Period:** ${first:,.2f}
+- **Latest Period:** ${last:,.2f}
+- **Overall Growth:** {growth:+.1f}%
+- **Best Month:** {monthly.loc[monthly[value_col].idxmax(), 'Month']} (${monthly[value_col].max():,.2f})
+- **Worst Month:** {monthly.loc[monthly[value_col].idxmin(), 'Month']} (${monthly[value_col].min():,.2f})
+
+📌 **Insight:** {'Positive growth trend!' if growth > 0 else 'Declining trend — needs attention!'}"""
+
+            chart = px.line(monthly, x='Month', y=value_col,
+                           title=f'{value_col} Trend Over Time',
+                           markers=True)
+            chart.update_traces(line_color='steelblue', line_width=2)
+        else:
+            response = "I couldn't find date/time data for trend analysis."
+
+    # --- Loss Making ---
+    elif any(x in q for x in ['loss', 'losing', 'negative',
+                                'worst', 'poor', 'underperform']):
+        if cols['profit']:
+            loss_items = df[df[cols['profit']] < 0]
+            if len(loss_items) > 0:
+                target_col = cols['product'] or cols['category'] or cat_cols[0] if cat_cols else None
+                response = f"""🚨 **Loss-Making Analysis**
+
+- **Total Loss Transactions:** {len(loss_items):,}
+- **Total Loss Amount:** ${loss_items[cols['profit']].sum():,.2f}
+- **Percentage of Transactions:** {len(loss_items)/len(df)*100:.1f}%\n\n"""
+
+                if target_col:
+                    loss_by = loss_items.groupby(target_col)[cols['profit']].sum(
+                    ).sort_values().head(5).reset_index()
+                    response += "**Top Loss-Making Items:**\n"
+                    for _, row in loss_by.iterrows():
+                        response += f"- {row[target_col]}: ${row[cols['profit']]:,.2f}\n"
+                    response += "\n📌 **Recommendation:** Review pricing strategy for loss-making items immediately."
+
+                    chart = go.Figure(go.Bar(
+                        y=loss_by[target_col],
+                        x=loss_by[cols['profit']],
+                        orientation='h',
+                        marker_color='coral'))
+                    chart.update_layout(title='Top Loss-Making Items')
+            else:
+                response = "Great news! No loss-making transactions found in your data."
+        else:
+            response = "I couldn't find profit data to identify losses."
+
+    # --- Distribution ---
+    elif any(x in q for x in ['distribution', 'breakdown',
+                                'share', 'proportion', 'percentage']):
+        target_col = cols['category'] or cat_cols[0] if cat_cols else None
+        value_col = cols['sales'] or numeric_cols[0] if numeric_cols else None
+
+        if target_col and value_col:
+            dist = df.groupby(target_col)[value_col].sum().reset_index()
+            response = f"""📊 **{value_col} Distribution by {target_col}**\n\n"""
+            total = dist[value_col].sum()
+            for _, row in dist.iterrows():
+                pct = row[value_col] / total * 100
+                response += f"- **{row[target_col]}:** ${row[value_col]:,.2f} ({pct:.1f}%)\n"
+            response += f"\n📌 **Insight:** {dist.loc[dist[value_col].idxmax(), target_col]} dominates with {dist[value_col].max()/total*100:.1f}% share."
+
+            chart = px.pie(dist, names=target_col, values=value_col,
+                          title=f'{value_col} Distribution by {target_col}',
+                          hole=0.4)
+        else:
+            response = "I couldn't find the right columns for distribution analysis."
+
+    # --- Summary / General ---
+    elif any(x in q for x in ['summary', 'overview', 'tell me',
+                                'about', 'describe', 'what']):
+        response = summarize_numeric(df)
+
+    # --- Discount Analysis ---
+    elif any(x in q for x in ['discount', 'promo', 'offer']):
+        if cols['discount']:
+            avg_disc = df[cols['discount']].mean() * 100
+            high_disc = (df[cols['discount']] > 0.3).sum()
+            response = f"""🏷️ **Discount Analysis**
+
+- **Average Discount:** {avg_disc:.1f}%
+- **High Discount Transactions (>30%):** {high_disc:,}
+- **No Discount Transactions:** {(df[cols['discount']] == 0).sum():,}
+
+📌 **Insight:** {'High discounting detected — may be hurting margins.' if avg_disc > 20 else 'Discount levels appear reasonable.'}"""
+
+            chart = px.histogram(df, x=cols['discount'],
+                               title='Discount Distribution',
+                               color_discrete_sequence=['steelblue'])
+        else:
+            response = "I couldn't find discount data in your dataset."
+
+    # --- Default Fallback ---
+    else:
+        response = summarize_numeric(df)
+        response = f"""🤔 I'm not sure exactly what you're asking, but here's a quick overview of your data:
+
+{response}
+
+💡 **Try asking:**
+- "What are my total sales?"
+- "Show me the top performing products"
+- "What is my profit margin?"
+- "Show sales trend over time"
+- "Which region performs best?"
+- "What items are losing money?"
 """
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[
-            {"role": "user", "content": question}
-        ],
-        system=system_prompt
-    )
+    return response, chart
 
-    return message.content[0].text
+def summarize_numeric(df):
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    summary = "📋 **Dataset Overview**\n\n"
+    summary += f"- **Total Rows:** {len(df):,}\n"
+    summary += f"- **Total Columns:** {df.shape[1]}\n\n"
+    summary += "**Key Metrics:**\n"
+    for col in numeric_cols[:5]:
+        summary += f"- **{col}:** Total={df[col].sum():,.2f} | Avg={df[col].mean():,.2f}\n"
+    return summary
 
 # --- Sidebar ---
 with st.sidebar:
-    st.markdown("### ⚙️ Configuration")
-    api_key = st.text_input("Enter Anthropic API Key:",
-                            type="password",
-                            placeholder="sk-ant-...")
-
-    st.markdown("---")
-    st.markdown("### 📁 Upload Data")
+    st.markdown("### 📁 Upload Your Data")
     uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
 
     if uploaded_file:
         try:
-            df = pd.read_csv(uploaded_file)
+            df = pd.read_csv(uploaded_file, encoding='latin-1')
             st.session_state.df = df
-            st.session_state.data_summary = generate_data_summary(df)
-            st.success(f"✅ Loaded {df.shape[0]:,} rows, {df.shape[1]} columns")
-
-            st.markdown("### 📋 Dataset Info")
-            st.write(f"**Rows:** {df.shape[0]:,}")
-            st.write(f"**Columns:** {df.shape[1]}")
+            st.success(f"✅ Loaded {df.shape[0]:,} rows!")
             st.write(f"**Columns:** {', '.join(df.columns.tolist())}")
-
         except Exception as e:
-            st.error(f"Error loading file: {e}")
+            st.error(f"Error: {e}")
 
     st.markdown("---")
     st.markdown("### 💡 Sample Questions")
-    st.markdown("""
-    - What are my total sales?
-    - Which product has highest profit?
-    - Show me the top performing regions
-    - What is my overall profit margin?
-    - Which category drives most revenue?
-    - What are the trends in my sales?
-    """)
+    sample_questions = [
+        "What are my total sales?",
+        "Show me profit analysis",
+        "Which are the top products?",
+        "Show regional performance",
+        "What is the sales trend?",
+        "Which items are losing money?",
+        "Show sales distribution",
+        "Discount analysis"
+    ]
+    for q in sample_questions:
+        if st.button(q, use_container_width=True):
+            st.session_state.pending_question = q
 
-    if st.button("🗑️ Clear Chat"):
+    st.markdown("---")
+    if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-# --- Main Chat Interface ---
+# --- Main Interface ---
 if st.session_state.df is None:
-    st.info("👈 Please upload a CSV file from the sidebar to get started!")
-
-    st.markdown("### 📊 What can this app do?")
+    st.info("👈 Upload a CSV file from the sidebar to get started!")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown("""
-        **🤖 AI Analysis**
-        Ask any question about your sales data in plain English
-        """)
+        st.markdown("**🧠 Smart Analysis**\nUnderstands natural language questions")
     with col2:
-        st.markdown("""
-        **📈 Auto Charts**
-        Automatically generates relevant visualizations
-        """)
+        st.markdown("**📈 Auto Charts**\nGenerates relevant visualizations automatically")
     with col3:
-        st.markdown("""
-        **💡 Insights**
-        Get actionable business recommendations instantly
-        """)
-
+        st.markdown("**💡 Insights**\nActionable business recommendations")
 else:
     df = st.session_state.df
 
-    # Data Preview
-    with st.expander("👀 Preview Your Data", expanded=False):
+    with st.expander("👀 Preview Data", expanded=False):
         st.dataframe(df.head(10), use_container_width=True)
 
-        col1, col2, col3, col4 = st.columns(4)
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) >= 1:
-            col1.metric("Total " + numeric_cols[0],
-                       f"{df[numeric_cols[0]].sum():,.0f}")
-        if len(numeric_cols) >= 2:
-            col2.metric("Total " + numeric_cols[1],
-                       f"{df[numeric_cols[1]].sum():,.0f}")
-        col3.metric("Total Rows", f"{df.shape[0]:,}")
-        col4.metric("Total Columns", f"{df.shape[1]}")
-
-    st.markdown("---")
     st.markdown("### 💬 Chat with Your Data")
 
-    # Display chat history
+    # Display messages
     for message in st.session_state.messages:
         if message['role'] == 'user':
             st.markdown(f"""
@@ -282,21 +409,37 @@ else:
         else:
             st.markdown(f"""
             <div class="chat-message-ai">
-            🤖 <strong>AI Analyst:</strong> {message['content']}
+            🤖 <strong>AI Analyst:</strong><br>{message['content']}
             </div>""", unsafe_allow_html=True)
-            if 'chart' in message and message['chart'] is not None:
-                st.plotly_chart(message['chart'],
-                               use_container_width=True)
+            if message.get('chart') is not None:
+                st.plotly_chart(message['chart'], use_container_width=True)
 
-    # Chat Input
+    # Handle sidebar button questions
+    if hasattr(st.session_state, 'pending_question'):
+        question = st.session_state.pending_question
+        del st.session_state.pending_question
+        st.session_state.messages.append({'role': 'user', 'content': question})
+        response, chart = analyze_question(question, df)
+        st.session_state.messages.append({
+            'role': 'assistant', 'content': response, 'chart': chart})
+        st.rerun()
+
+    # Chat input
     question = st.chat_input("Ask anything about your sales data...")
-
     if question:
-        if not api_key:
-            st.warning("Please enter your Anthropic API key in the sidebar!")
-        else:
-            st.session_state.messages.append({
-                'role': 'user',
+        st.session_state.messages.append({'role': 'user', 'content': question})
+        with st.spinner("Analyzing..."):
+            response, chart = analyze_question(question, df)
+        st.session_state.messages.append({
+            'role': 'assistant', 'content': response, 'chart': chart})
+        st.rerun()
+
+# --- Footer ---
+st.markdown("---")
+st.markdown("""
+<div style='text-align:center; color:#888; font-size:0.8rem'>
+Built with ❤️ using Streamlit | Sales Insights Chatbot v2.0
+</div>""", unsafe_allow_html=True)            'role': 'user',
                 'content': question
             })
 
