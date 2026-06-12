@@ -418,22 +418,33 @@ else:
     if hasattr(st.session_state, 'pending_question'):
         question = st.session_state.pending_question
         del st.session_state.pending_question
-        st.session_state.messages.append({'role': 'user', 'content': question})
+        st.session_state.messages.append({
+            'role': 'user',
+            'content': question
+        })
         response, chart = analyze_question(question, df)
         st.session_state.messages.append({
-            'role': 'assistant', 'content': response, 'chart': chart})
+            'role': 'assistant',
+            'content': response,
+            'chart': chart
+        })
         st.rerun()
 
     # Chat input
     question = st.chat_input("Ask anything about your sales data...")
     if question:
-        st.session_state.messages.append({'role': 'user', 'content': question})
+        st.session_state.messages.append({
+            'role': 'user',
+            'content': question
+        })
         with st.spinner("Analyzing..."):
             response, chart = analyze_question(question, df)
         st.session_state.messages.append({
-            'role': 'assistant', 'content': response, 'chart': chart})
+            'role': 'assistant',
+            'content': response,
+            'chart': chart
+        })
         st.rerun()
-
 # --- Footer ---
 st.markdown("---")
 st.markdown("""
