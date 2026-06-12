@@ -450,33 +450,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align:center; color:#888; font-size:0.8rem'>
 Built with ❤️ using Streamlit | Sales Insights Chatbot v2.0
-</div>""", unsafe_allow_html=True)            'role': 'user',
-                'content': question
+</div>""", unsafe_allow_html=True)           
             })
 
-            with st.spinner("🤔 Analyzing your data..."):
-                try:
-                    response = ask_claude(
-                        question,
-                        st.session_state.data_summary,
-                        api_key
-                    )
-                    chart = build_chart(df, question)
-
-                    st.session_state.messages.append({
-                        'role': 'assistant',
-                        'content': response,
-                        'chart': chart
-                    })
-
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-
-            st.rerun()
-
-# --- Footer ---
-st.markdown("---")
-st.markdown("""
-<div style='text-align:center; color:#888; font-size:0.8rem'>
-Built with ❤️ using Streamlit & Claude AI | Sales Insights Chatbot v1.0
-</div>""", unsafe_allow_html=True)
+            
